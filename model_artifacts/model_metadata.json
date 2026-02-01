@@ -1,0 +1,13 @@
+{
+  "best_threshold": 0.3500000000000001,
+  "class_labels": [
+    "High",
+    "Low",
+    "Medium"
+  ],
+  "categorical_cols": [
+    "City",
+    "Wind_Direction",
+    "Sunrise_Sunset"
+  ]
+}
