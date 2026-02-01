@@ -1,130 +1,157 @@
 import streamlit as st
-import joblib
 import requests
 import pandas as pd
+import numpy as np
 from datetime import datetime
+import joblib
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
 
-# Load the model
-@st.cache_resource
-def load_model():
-    return joblib.load('model_artifacts/rf_model.joblib')
+def init_model():
+    """Initialize or load the safety prediction model"""
+    try:
+        # Try to load existing model
+        model = joblib.load('rf_model.joblib')
+        label_encoder = joblib.load('label_encoder.joblib')
+        st.success("Loaded existing model")
 
-# Weather API function
-def get_weather(api_key, city):
-    base_url = "http://api.openweathermap.org/data/2.5/weather"
-    params = {
-        'q': city,
-        'appid': api_key,
-        'units': 'metric'  # For Celsius
+        # Create and fit label encoder for weather conditions
+        label_encoder = LabelEncoder()
+        sample_data['weather_encoded'] = label_encoder.fit_transform(
+            sample_data['weather_condition']
+        )
+
+        # Create and train model
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(
+            sample_data[['temperature', 'weather_encoded', 'wind_speed', 'visibility']], 
+            sample_data['safety_score']
+        )
+
+        # Save model and encoder
+        joblib.dump(model, 'safety_model.joblib')
+        joblib.dump(label_encoder, 'label_encoder.joblib')
+        st.success("Created and saved new model")
+
+    return model, label_encoder
+
+def get_weather(city, api_key):
+    """Fetch weather data from OpenWeather API"""
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()
+    return None
+
+def predict_safety_score(weather_data, model, label_encoder):
+    """Predict safety score using the ML model"""
+    if not weather_data:
+        return None, "Unable to fetch weather data"
+
+    # Extract features from weather data
+    features = pd.DataFrame({
+        'temperature': [weather_data['main']['temp']],
+        'weather_condition': [weather_data['weather'][0]['main']],
+        'wind_speed': [weather_data['wind']['speed']],
+        'visibility': [weather_data.get('visibility', 10000)]
+    })
+
+    # Encode weather condition
+    features['weather_encoded'] = label_encoder.transform(features['weather_condition'])
+
+    # Make prediction
+    prediction = model.predict(
+        features[['temperature', 'weather_encoded', 'wind_speed', 'visibility']]
+    )[0]
+
+    # Generate message
+    messages = {
+        1: "Safe driving conditions",
+        2: "Moderate risk - Drive with caution",
+        3: "High risk - Consider postponing travel"
     }
 
-    try:
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        st.error(f"Error fetching weather data: {e}")
-        return None
+    return prediction, messages[prediction]
 
-# Main app
 def main():
-    st.title("Weather2Go")
+    st.title("🚗 ML-Powered Driving Safety Analyzer")
 
-    # Load model
-    model = load_model()
+    # Initialize model
+    model, label_encoder = init_model()
 
-    # Get API key from secrets
-    weather_api_key = st.secrets["weather_api_key"]
+    # Get OpenWeather API key from secrets
+    api_key = st.secrets["openweather"]["api_key"]
 
-    # User input form
-    with st.form("user_input"):
-        # Personal info
-        name = st.text_input("Name")
-        city1 = st.text_input("City1")
-        city2 = st.text_input("City2")
+    # User input
+    col1, col2 = st.columns(2)
+    with col1:
+        start_location = st.text_input("Starting City")
+    with col2:
+        end_location = st.text_input("Destination City")
 
-        # Model input features
-        feature1 = st.number_input("Feature 1", min_value=0.0)
-        feature2 = st.number_input("Feature 2", min_value=0.0)
-        # Add more features as needed
+    if st.button("Analyze Route Safety"):
+        if start_location and end_location:
+            # Get weather for both locations
+            start_weather = get_weather(start_location, api_key)
+            end_weather = get_weather(end_location, api_key)
 
-        submitted = st.form_submit_button("Submit")
-
-    if submitted:
-        # Get current weather
-        weather_data = get_weather(weather_api_key, city)
-
-        if weather_data:
-            # Extract relevant weather info
-            temperature = weather_data['main']['temp']
-            humidity = weather_data['main']['humidity']
-            weather_condition = weather_data['weather'][0]['main']
-
-            # Prepare model input
-            model_input = pd.DataFrame({
-                'feature1': [feature1],
-                'feature2': [feature2],
-                'temperature': [temperature],
-                'humidity': [humidity]
-                # Add more features as needed
-            })
-
-            # Make prediction
-            risk_score = model.predict(model_input)[0]
-
-            # Display results
-            st.subheader("Results")
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.write("Weather Conditions:")
-                st.write(f"- Temperature: {temperature}°C")
-                st.write(f"- Humidity: {humidity}%")
-                st.write(f"- Condition: {weather_condition}")
-
-            with col2:
-                st.write("Risk Assessment:")
-                st.write(f"- Risk Score: {risk_score:.2f}")
-
-                # Custom risk levels based on score
-                if risk_score < 0.3:
-                    risk_level = "Low"
-                    color = "green"
-                elif risk_score < 0.7:
-                    risk_level = "Medium"
-                    color = "yellow"
-                else:
-                    risk_level = "High"
-                    color = "red"
-
-                st.markdown(f"- Risk Level: :{color}[{risk_level}]")
-
-            # Save to database/file
-            save_data = {
-                'timestamp': datetime.now(),
-                'name': name,
-                'city1': city1,
-                'city1': city2,
-                'weather_condition': weather_condition,
-                'temperature': temperature,
-                'humidity': humidity,
-                'risk_score': risk_score,
-                'risk_level': risk_level
-            }
-
-            # Use Streamlit connection to save to database
-            conn = st.connection('results_db', type='sql')
-            with conn.session as s:
-                s.execute(
-                    """INSERT INTO results 
-                       (timestamp, name, city, weather_condition, temperature, 
-                        humidity, risk_score, risk_level)
-                       VALUES (:ts, :name, :city, :weather, :temp, :humid, 
-                              :score, :level)""",
-                    params=save_data
+            if start_weather and end_weather:
+                # Calculate safety scores using ML model
+                start_score, start_message = predict_safety_score(
+                    start_weather, model, label_encoder
                 )
-                s.commit()
+                end_score, end_message = predict_safety_score(
+                    end_weather, model, label_encoder
+                )
+
+                # Use worst score between start and end
+                final_score = max(start_score, end_score)
+
+                # Display results
+                st.header("Safety Analysis")
+
+                # Weather information
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader(f"🏁 {start_location}")
+                    st.write(f"Temperature: {start_weather['main']['temp']}°C")
+                    st.write(f"Conditions: {start_weather['weather'][0]['description']}")
+                    st.write(f"Wind Speed: {start_weather['wind']['speed']} m/s")
+                    st.write(f"Visibility: {start_weather.get('visibility', 10000)} m")
+
+                with col2:
+                    st.subheader(f"🏁 {end_location}")
+                    st.write(f"Temperature: {end_weather['main']['temp']}°C")
+                    st.write(f"Conditions: {end_weather['weather'][0]['description']}")
+                    st.write(f"Wind Speed: {end_weather['wind']['speed']} m/s")
+                    st.write(f"Visibility: {end_weather.get('visibility', 10000)} m")
+
+                # Safety Score
+                st.subheader("Overall Safety Score")
+                if final_score == 1:
+                    st.success("✅ Safe driving conditions")
+                elif final_score == 2:
+                    st.warning("⚠️ Moderate risk - Drive with caution")
+                else:
+                    st.error("🚫 High risk - Consider postponing travel")
+
+                # Model confidence
+                predictions_proba = model.predict_proba(
+                    [[start_weather['main']['temp'], 
+                      label_encoder.transform([start_weather['weather'][0]['main']])[0],
+                      start_weather['wind']['speed'],
+                      start_weather.get('visibility', 10000)]]
+                )
+                st.write("Model Confidence:")
+                st.write(pd.DataFrame(
+                    predictions_proba,
+                    columns=['Safe', 'Moderate Risk', 'High Risk']
+                ))
+
+            else:
+                st.error("Unable to fetch weather data. Please check city names.")
+        else:
+            st.warning("Please enter both starting and destination cities.")
 
 if __name__ == "__main__":
     main()
