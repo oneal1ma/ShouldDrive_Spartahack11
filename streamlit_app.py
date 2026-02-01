@@ -7,7 +7,7 @@ from datetime import datetime
 # Load the model
 @st.cache_resource
 def load_model():
-    return joblib.load('C:\Users\molly\Downloads\ShouldDrive_Spartahack11-main.zip\ShouldDrive_Spartahack11-main\model_artifacts\rf_model.joblib')
+    return joblib.load('model_artifacts/rf_model.joblib')
 
 # Weather API function
 def get_weather(api_key, city):
